@@ -1,4 +1,6 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -20,6 +22,16 @@ class GameScreen extends ConsumerStatefulWidget {
 class _GameScreenState extends ConsumerState<GameScreen> with TickerProviderStateMixin {
   Size _screenSize = Size.zero;
   late AnimationController _batteryPulseController;
+  late AnimationController _visualController;
+
+  Offset? _targetNormalized;
+  Offset? _smoothedNormalized;
+  Offset _smoothedVelocity = Offset.zero;
+  double _beamHeading = -pi / 2;
+  double _movementSpeed = 0.0;
+  double _eyeAdaptation = 1.0;
+  DateTime? _lastFrameAt;
+  DateTime _lastBatteryBuzzAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
@@ -28,6 +40,13 @@ class _GameScreenState extends ConsumerState<GameScreen> with TickerProviderStat
       vsync: this,
       duration: const Duration(milliseconds: 1000),
     )..repeat(reverse: true);
+
+    _visualController = AnimationController(
+      vsync: this,
+      duration: const Duration(hours: 24),
+    )
+      ..addListener(_tickFlashlightPhysics)
+      ..repeat();
     
     // Load first scene
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -38,16 +57,120 @@ class _GameScreenState extends ConsumerState<GameScreen> with TickerProviderStat
   @override
   void dispose() {
     _batteryPulseController.dispose();
+    _visualController
+      ..removeListener(_tickFlashlightPhysics)
+      ..dispose();
     super.dispose();
   }
 
-  void _onPanUpdate(DragUpdateDetails details) {
-    final normalized = Offset(
+  double get _timeSeconds => _visualController.value * 86400;
+
+  Offset _clampNormalized(Offset value) {
+    return Offset(value.dx.clamp(0.0, 1.0), value.dy.clamp(0.0, 1.0));
+  }
+
+  void _onPanStart(DragStartDetails details) {
+    SystemSound.play(SystemSoundType.click);
+    final normalized = _clampNormalized(Offset(
       details.localPosition.dx / _screenSize.width,
       details.localPosition.dy / _screenSize.height,
-    );
-    
+    ));
+    _targetNormalized = normalized;
+    _smoothedNormalized ??= normalized;
     ref.read(gameProvider.notifier).updateFlashlightPosition(normalized, _screenSize);
+  }
+
+  void _onPanEnd([dynamic _]) {}
+
+  void _onPanUpdate(DragUpdateDetails details) {
+    final normalized = _clampNormalized(Offset(
+      details.localPosition.dx / _screenSize.width,
+      details.localPosition.dy / _screenSize.height,
+    ));
+    _targetNormalized = normalized;
+    _smoothedNormalized ??= normalized;
+  }
+
+  void _tickFlashlightPhysics() {
+    final target = _targetNormalized;
+    if (target == null || _screenSize == Size.zero) return;
+
+    final now = DateTime.now();
+    final rawDt = _lastFrameAt == null
+        ? 0.016
+        : (now.difference(_lastFrameAt!).inMicroseconds / 1000000.0);
+    final dt = rawDt.clamp(0.008, 0.05);
+    _lastFrameAt = now;
+
+    final current = _smoothedNormalized ?? target;
+    final delta = target - current;
+
+    const spring = 26.0;
+    const damping = 12.5;
+    final accel = Offset(
+      delta.dx * spring - _smoothedVelocity.dx * damping,
+      delta.dy * spring - _smoothedVelocity.dy * damping,
+    );
+
+    _smoothedVelocity = Offset(
+      _smoothedVelocity.dx + accel.dx * dt,
+      _smoothedVelocity.dy + accel.dy * dt,
+    );
+
+    var next = Offset(
+      current.dx + _smoothedVelocity.dx * dt,
+      current.dy + _smoothedVelocity.dy * dt,
+    );
+
+    final gameState = ref.read(gameProvider);
+    final batteryRatio = (gameState.batteryLevel /
+            ref.read(subscriptionProvider).currentTier.maxBattery)
+        .clamp(0.0, 1.0);
+
+    if (batteryRatio < 0.25) {
+      final jitterAmp = (0.0009 + ((0.25 - batteryRatio) * 0.003)) *
+          (gameState.isBatteryCritical ? 1.7 : 1.0);
+      next = Offset(
+        next.dx + sin((_timeSeconds * 19) + next.dx * 11) * jitterAmp,
+        next.dy + cos((_timeSeconds * 23) + next.dy * 13) * jitterAmp,
+      );
+    }
+
+    next = _clampNormalized(next);
+    _smoothedNormalized = next;
+
+    final velocityPx = Offset(
+      _smoothedVelocity.dx * _screenSize.width,
+      _smoothedVelocity.dy * _screenSize.height,
+    );
+    _movementSpeed = velocityPx.distance;
+    if (_movementSpeed > 8) {
+      _beamHeading = atan2(velocityPx.dy, velocityPx.dx);
+    }
+
+    final targetAdaptation = (1.0 - (_movementSpeed / 2800)).clamp(0.78, 1.0);
+    _eyeAdaptation += (targetAdaptation - _eyeAdaptation) * (dt * 8.5);
+
+    if (gameState.isBatteryCritical &&
+        now.difference(_lastBatteryBuzzAt).inSeconds >= 7) {
+      _lastBatteryBuzzAt = now;
+      SystemSound.play(SystemSoundType.alert);
+    }
+
+    ref.read(gameProvider.notifier).updateFlashlightPosition(next, _screenSize);
+    if (mounted) setState(() {});
+  }
+
+  double _sceneDustDensity(String? sceneId) {
+    if (sceneId == null) return 1.0;
+    final id = sceneId.toLowerCase();
+    if (id.contains('attic') || id.contains('warehouse') || id.contains('catacomb')) {
+      return 1.6;
+    }
+    if (id.contains('library') || id.contains('museum') || id.contains('archive')) {
+      return 1.2;
+    }
+    return 1.0;
   }
 
   @override
@@ -63,11 +186,15 @@ class _GameScreenState extends ConsumerState<GameScreen> with TickerProviderStat
           _screenSize = Size(constraints.maxWidth, constraints.maxHeight);
           
           return GestureDetector(
+            onPanStart: _onPanStart,
+            onPanEnd: _onPanEnd,
+            onPanCancel: _onPanEnd,
             onPanUpdate: _onPanUpdate,
-            onTapDown: (details) => _onPanUpdate(DragUpdateDetails(
+            onTapDown: (details) => _onPanStart(DragStartDetails(
               localPosition: details.localPosition,
               globalPosition: details.globalPosition,
             )),
+            onTapUp: (_) => _onPanEnd(),
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -95,6 +222,22 @@ class _GameScreenState extends ConsumerState<GameScreen> with TickerProviderStat
                     radius: subState.currentTier.beamRadius,
                     intensity: gameState.batteryLevel / subState.currentTier.maxBattery,
                     isFlickering: gameState.isBatteryCritical,
+                    headingRadians: _beamHeading,
+                    movementSpeed: _movementSpeed,
+                    timeSeconds: _timeSeconds,
+                    focusQuality: subState.currentTier.tierId == 'illuminator' ? 0.95 : 0.62,
+                    eyeAdaptation: _eyeAdaptation,
+                    dustDensity: _sceneDustDensity(scene?.id),
+                    contactPoints: scene?.words
+                          .where((w) =>
+                              gameState.foundWordIds.contains(w.id) ||
+                              gameState.currentlyIlluminating?.id == w.id)
+                          .map((w) => Offset(
+                                w.positionX * _screenSize.width,
+                                w.positionY * _screenSize.height,
+                              ))
+                          .toList() ??
+                        const [],
                   ),
                 ),
 

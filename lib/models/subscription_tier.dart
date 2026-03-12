@@ -16,7 +16,7 @@ class SubscriptionTier with _$SubscriptionTier {
     @HiveField(5) required bool cloudSync,
     @HiveField(6) required bool exclusiveScenes,
     @HiveField(7) required String lightColor, // White, Gold, Purple
-    @HiveField(8) required double beamRadius, // 100, 150, 200
+    @HiveField(8) required double beamRadius, // 120, 220, 280
     @HiveField(9) @Default(false) bool isActive,
     @HiveField(10) DateTime? expiryDate,
   }) = _SubscriptionTier;
@@ -33,7 +33,7 @@ class SubscriptionTier with _$SubscriptionTier {
     cloudSync: false,
     exclusiveScenes: false,
     lightColor: 'white',
-    beamRadius: 80, // Narrow beam, harder to find
+    beamRadius: 120, // Larger beam for a more immersive reveal
   );
 
   static SubscriptionTier premium() => const SubscriptionTier(
@@ -45,6 +45,6 @@ class SubscriptionTier with _$SubscriptionTier {
     cloudSync: true,
     exclusiveScenes: true, // Access to "Legendary" dark rooms
     lightColor: 'gold',
-    beamRadius: 150, // Wide beam, easier hunting
+    beamRadius: 220, // Very wide beam, cinematic exploration
   );
 }

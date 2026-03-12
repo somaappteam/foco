@@ -130,7 +130,7 @@ class EquipmentScreen extends ConsumerWidget {
                       specs: [
                         'Extended Battery (200%)',
                         'Unlimited Daily Access',
-                        'Wide Beam (150px radius)',
+                        'Ultra-Wide Beam (220px radius)',
                         'Full Scene Completion (5+ words)',
                         'Legendary Dark Rooms',
                         'Cloud Memory Preservation',
@@ -302,4 +302,3 @@ class _EquipmentCard extends StatelessWidget {
     );
   }
 }
-
